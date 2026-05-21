@@ -1,7 +1,5 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
-
-const execFileAsync = promisify(execFile)
+import lighthouse from 'lighthouse'
+import puppeteer from 'puppeteer'
 
 const AUDIT_MAP = {
   lcp: 'largest-contentful-paint',
@@ -52,28 +50,33 @@ export class LighthouseRunner {
     this.#runs = runs
   }
 
-  async measure(url, cdpPort) {
+  async measure(url) {
     const results = []
 
     for (let i = 0; i < this.#runs; i++) {
-      const lhResult = await this.#runOnce(url, cdpPort)
+      const lhResult = await this.#runOnce(url)
       results.push(extractMetrics(lhResult))
     }
 
     return pickMedian(results)
   }
 
-  async #runOnce(url, cdpPort) {
-    const { stdout } = await execFileAsync('node', [
-      'node_modules/.bin/lighthouse',
-      url,
-      `--port=${cdpPort}`,
-      '--output=json',
-      '--output-path=stdout',
-      '--chrome-flags=--headless',
-      '--only-categories=performance',
-      '--quiet',
-    ])
-    return JSON.parse(stdout)
+  async #runOnce(url) {
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    })
+    try {
+      const { port } = new URL(browser.wsEndpoint())
+      const result = await lighthouse(url, {
+        port: Number(port),
+        output: 'json',
+        onlyCategories: ['performance'],
+        logLevel: 'silent',
+      })
+      return result.lhr
+    } finally {
+      await browser.close()
+    }
   }
 }
