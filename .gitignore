@@ -1,0 +1,9 @@
+node_modules/
+tmp/
+dist/
+.env
+*.pdf
+*.zip
+初探OpenClaw/
+外包数据提报切换需求/
+"PerfSim Platform 优化建议&本地推演需求文档/"
