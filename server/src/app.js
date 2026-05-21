@@ -17,6 +17,22 @@ function sanitizeChains(chains) {
   return chains.map(chain => chain.map(sanitizeRequest))
 }
 
+// Sanitize rule results — chains inside rule analysis may also contain raw requests
+function sanitizeRules(rules) {
+  return rules.map(rule => ({
+    ...rule,
+    chains: rule.chains
+      ? rule.chains.map(chain =>
+          Array.isArray(chain)
+            ? chain.map(sanitizeRequest)
+            : chain.requests
+              ? { ...chain, requests: chain.requests.map(sanitizeRequest) }
+              : chain
+        )
+      : rule.chains,
+  }))
+}
+
 export function createApp({ sessionManager, recordingEngine, lighthouseRunner, ruleEngine, simulationEngine } = {}) {
   const app = express()
 
@@ -80,19 +96,19 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
       // Phase 2: Lighthouse baseline
       const metrics = await lighthouseRunner.measure(url)
 
-      // Phase 3: Find serial chains
+      // Phase 3: Find serial chains (raw — rules need responseBody for causal analysis)
       const chains = findSerialChains(recording.requests ?? [])
-      const cleanChains = sanitizeChains(chains)
 
-      // Phase 4: Apply rules (pass clean chains — no responseBody/headers)
-      const rules = await ruleEngine.run({ recording, chains: cleanChains }, metrics)
+      // Phase 4: Apply rules with full chain data (includes responseBody for dependency analysis)
+      const rules = await ruleEngine.run({ recording, chains }, metrics)
 
+      // Sanitize only when sending to client — strip responseBody/headers
       res.json({
         sessionId: session.sessionId,
         url,
         metrics,
-        chains: cleanChains,
-        rules,
+        chains: sanitizeChains(chains),
+        rules: sanitizeRules(rules),
         loginRedirect: recording.loginRedirect,
         recordedAt: recording.recordedAt,
       })
@@ -125,8 +141,8 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
       const chains = findSerialChains(recording.requests ?? [])
       const cleanChains = sanitizeChains(chains)
 
-      // Determine rules to apply (from client or by running engine)
-      const rules = clientRules ?? await ruleEngine.run({ recording, chains: cleanChains }, before)
+      // Determine rules to apply (from client or by running engine with full chain data)
+      const rules = clientRules ?? await ruleEngine.run({ recording, chains }, before)
 
       // Simulate: inject scripts and measure
       const after = await simulationEngine.simulate({ url, rules, cookies })
@@ -141,7 +157,7 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
         before,
         after,
         savedMs,
-        rules,
+        rules: sanitizeRules(rules),
         chains: cleanChains,
         loginRedirect: recording.loginRedirect,
       })

@@ -14,12 +14,26 @@ export function analyze({ chains = [] }) {
   const qualifiedChains = chains
     .filter(chain => chain.length >= MIN_CHAIN_LENGTH)
     .map(chain => {
-      // Total delay = time from end of first request to end of last request
-      // This is what we can potentially save by preloading
       const first = chain[0]
       const last = chain[chain.length - 1]
       const totalDelayMs = last.endTime - first.endTime
-      return { requests: chain, totalDelayMs }
+
+      // Verify causal dependency: does each upstream responseBody reference the next URL?
+      // A chain is "confirmed" if at least one link has verifiable causality.
+      let confirmedLinks = 0
+      for (let i = 0; i < chain.length - 1; i++) {
+        const upstream = chain[i]
+        const downstream = chain[i + 1]
+        if (upstream.responseBody && downstream.url) {
+          const downstreamPath = new URL(downstream.url).pathname
+          if (upstream.responseBody.includes(downstream.url) ||
+              upstream.responseBody.includes(downstreamPath)) {
+            confirmedLinks++
+          }
+        }
+      }
+
+      return { requests: chain, totalDelayMs, confirmedLinks }
     })
 
   const maxDelay = qualifiedChains.reduce((max, c) => Math.max(max, c.totalDelayMs), 0)
