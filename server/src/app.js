@@ -7,6 +7,16 @@ import { findSerialChains } from './chain-analyzer.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+// Strip large/internal fields before sending to client
+function sanitizeRequest(req) {
+  const { responseBody, requestBody, responseHeaders, ...rest } = req
+  return rest
+}
+
+function sanitizeChains(chains) {
+  return chains.map(chain => chain.map(sanitizeRequest))
+}
+
 export function createApp({ sessionManager, recordingEngine, lighthouseRunner, ruleEngine, simulationEngine } = {}) {
   const app = express()
 
@@ -80,7 +90,7 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
         sessionId: session.sessionId,
         url,
         metrics,
-        chains,
+        chains: sanitizeChains(chains),
         rules,
         loginRedirect: recording.loginRedirect,
         recordedAt: recording.recordedAt,
@@ -130,6 +140,7 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
         after,
         savedMs,
         rules,
+        chains: sanitizeChains(chains),
         loginRedirect: recording.loginRedirect,
       })
     } catch (err) {

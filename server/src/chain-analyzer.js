@@ -13,7 +13,12 @@ const SERIAL_GAP_MS = 50
 export function findSerialChains(requests) {
   if (requests.length === 0) return []
 
-  const sorted = [...requests].sort((a, b) => a.startTime - b.startTime)
+  // Exclude non-network resources (data URIs, blob URLs)
+  const networkRequests = requests.filter(r =>
+    r.url && !r.url.startsWith('data:') && !r.url.startsWith('blob:')
+  )
+
+  const sorted = [...networkRequests].sort((a, b) => a.startTime - b.startTime)
   const chains = []
   const used = new Set()
 
