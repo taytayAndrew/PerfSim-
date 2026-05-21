@@ -17,18 +17,22 @@ function sanitizeChains(chains) {
   return chains.map(chain => chain.map(sanitizeRequest))
 }
 
-// Sanitize rule results — chains inside rule analysis may also contain raw requests
+// Sanitize rule results — strip responseBody/headers from nested request objects
 function sanitizeRules(rules) {
   return rules.map(rule => ({
     ...rule,
-    chains: rule.chains
-      ? rule.chains.map(chain =>
-          Array.isArray(chain)
-            ? chain.map(sanitizeRequest)
-            : chain.requests
-              ? { ...chain, requests: chain.requests.map(sanitizeRequest) }
-              : chain
-        )
+    chains: Array.isArray(rule.chains)
+      ? rule.chains.map(chain => {
+          // Chain is { requests: [...], totalDelayMs, confirmedLinks }
+          if (chain && Array.isArray(chain.requests)) {
+            return { ...chain, requests: chain.requests.map(sanitizeRequest) }
+          }
+          // Chain is a plain array of requests
+          if (Array.isArray(chain)) {
+            return chain.map(sanitizeRequest)
+          }
+          return chain
+        })
       : rule.chains,
   }))
 }
