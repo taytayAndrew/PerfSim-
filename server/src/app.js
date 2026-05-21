@@ -82,15 +82,16 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
 
       // Phase 3: Find serial chains
       const chains = findSerialChains(recording.requests ?? [])
+      const cleanChains = sanitizeChains(chains)
 
-      // Phase 4: Apply rules
-      const rules = await ruleEngine.run({ recording, chains }, metrics)
+      // Phase 4: Apply rules (pass clean chains — no responseBody/headers)
+      const rules = await ruleEngine.run({ recording, chains: cleanChains }, metrics)
 
       res.json({
         sessionId: session.sessionId,
         url,
         metrics,
-        chains: sanitizeChains(chains),
+        chains: cleanChains,
         rules,
         loginRedirect: recording.loginRedirect,
         recordedAt: recording.recordedAt,
@@ -122,9 +123,10 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
       const recording = await recordingEngine.record({ url, cookies, sessionDir: session.dir })
       const before = await lighthouseRunner.measure(url)
       const chains = findSerialChains(recording.requests ?? [])
+      const cleanChains = sanitizeChains(chains)
 
       // Determine rules to apply (from client or by running engine)
-      const rules = clientRules ?? await ruleEngine.run({ recording, chains }, before)
+      const rules = clientRules ?? await ruleEngine.run({ recording, chains: cleanChains }, before)
 
       // Simulate: inject scripts and measure
       const after = await simulationEngine.simulate({ url, rules, cookies })
@@ -140,7 +142,7 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
         after,
         savedMs,
         rules,
-        chains: sanitizeChains(chains),
+        chains: cleanChains,
         loginRedirect: recording.loginRedirect,
       })
     } catch (err) {
