@@ -7,7 +7,7 @@ import { findSerialChains } from './chain-analyzer.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export function createApp({ sessionManager, recordingEngine, lighthouseRunner, ruleEngine } = {}) {
+export function createApp({ sessionManager, recordingEngine, lighthouseRunner, ruleEngine, simulationEngine } = {}) {
   const app = express()
 
   // CORS — allow Chrome Extension sources
@@ -87,6 +87,53 @@ export function createApp({ sessionManager, recordingEngine, lighthouseRunner, r
       })
     } catch (err) {
       console.error('[/api/analyze]', err)
+      res.status(500).json({ error: err.message })
+    } finally {
+      sessionManager.cleanup(session.sessionId)
+    }
+  })
+
+  // POST /api/simulate — inject optimization scripts, replay, return before/after metrics
+  app.post('/api/simulate', async (req, res) => {
+    const { url, cookies = [], rules: clientRules } = req.body ?? {}
+
+    if (!url) {
+      return res.status(400).json({ error: 'url is required' })
+    }
+
+    if (!sessionManager.acquireLock()) {
+      return res.status(423).json({ error: 'A simulation is already running' })
+    }
+
+    const session = sessionManager.createSession()
+
+    try {
+      // Baseline: record + lighthouse before optimization
+      const recording = await recordingEngine.record({ url, cookies, sessionDir: session.dir })
+      const before = await lighthouseRunner.measure(url)
+      const chains = findSerialChains(recording.requests ?? [])
+
+      // Determine rules to apply (from client or by running engine)
+      const rules = clientRules ?? await ruleEngine.run({ recording, chains }, before)
+
+      // Simulate: inject scripts and measure
+      const after = await simulationEngine.simulate({ url, rules, cookies })
+
+      const savedMs = before.lcp != null && after.lcp != null
+        ? Math.max(0, before.lcp - after.lcp)
+        : rules.reduce((sum, r) => sum + (r.savedMs ?? 0), 0)
+
+      res.json({
+        sessionId: session.sessionId,
+        url,
+        before,
+        after,
+        savedMs,
+        rules,
+        loginRedirect: recording.loginRedirect,
+      })
+    } catch (err) {
+      console.error('[/api/simulate]', err)
       res.status(500).json({ error: err.message })
     } finally {
       sessionManager.cleanup(session.sessionId)
