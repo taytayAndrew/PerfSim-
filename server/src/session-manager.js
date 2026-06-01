@@ -27,8 +27,8 @@ export class SessionManager {
     }
     if (this.#currentSessionId === sessionId) {
       this.#currentSessionId = null
+      this.#locked = false  // only release lock if this session still owns it
     }
-    this.#locked = false
   }
 
   acquireLock() {

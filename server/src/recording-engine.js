@@ -2,6 +2,7 @@ import puppeteer from 'puppeteer'
 import crypto from 'crypto'
 import fs from 'fs'
 import path from 'path'
+import { closeBrowser } from './browser-utils.js'
 
 const MAX_RESPONSE_BODY_BYTES = 500 * 1024 // 500KB
 
@@ -40,6 +41,7 @@ export class RecordingEngine {
   }
 
   async record({ url, cookies = [] }) {
+    this.#requests = []  // reset per-call — instance is reused across analyze+simulate
     const browser = await puppeteer.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
@@ -49,9 +51,28 @@ export class RecordingEngine {
       const page = await browser.newPage()
       await page.setBypassCSP(true)
 
-      // Inject cookies
+      // Cookie 注入必须在 page 处于目标域之后才能正确写入浏览器 Cookie jar。
+      // page.setCookie() 和 CDP Network.setCookie(page-level) 在 about:blank 时写的是
+      // session 虚拟 store，实际请求不会携带。
+      // 解决方案：先导航一次到目标域根路径（忽略结果），建立 origin context，
+      // 再 setCookie，然后才做真正的录制导航。
       if (cookies.length > 0) {
-        await page.setCookie(...cookies)
+        const sameSiteMap = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' }
+        const origin = new URL(url).origin
+        // 静默导航到根路径，忽略超时/重定向，只是为了让 page 处于目标域
+        await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {})
+        const puppeteerCookies = cookies.map(c => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path ?? '/',
+          secure: c.secure ?? false,
+          httpOnly: c.httpOnly ?? false,
+          sameSite: sameSiteMap[c.sameSite] ?? 'Lax',
+          ...(c.expirationDate ? { expires: c.expirationDate } : {}),
+        }))
+        await page.setCookie(...puppeteerCookies)
+        console.log(`[RecordingEngine] Injecting ${cookies.length} cookies via page.setCookie (after origin nav)`)
       }
 
       // Enable CDP network interception
@@ -102,18 +123,26 @@ export class RecordingEngine {
         pendingRequests.delete(requestId)
       })
 
-      // Detect login redirect
-      let loginRedirect = false
-      page.on('framenavigated', (frame) => {
-        if (frame === page.mainFrame()) {
-          const nav = frame.url()
-          if (nav.includes('login') || nav.includes('signin') || nav.includes('auth')) {
-            loginRedirect = true
-          }
-        }
-      })
-
+      // Detect login redirect:
+      // Compare final URL to the intended URL. If the path changed significantly
+      // (e.g. landed on a completely different path), it's likely a login redirect.
+      // We do NOT use keyword matching ("login", "signin") because many apps have
+      // "login" in their own URL structure (e.g. /hdb/login/home is the app shell).
       await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 })
+
+      const finalUrl = page.url()
+      const intendedPath = (() => { try { return new URL(url).pathname } catch { return '' } })()
+      const finalPath = (() => { try { return new URL(finalUrl).pathname } catch { return '' } })()
+      const pathChanged = intendedPath && finalPath && !finalPath.startsWith(intendedPath.split('/').slice(0, 3).join('/'))
+      const hasLoginKeyword = /\/(login|signin|sign-in|auth|sso|logout)\b/i.test(finalPath) &&
+        !/\/(login|signin|sign-in|auth|sso|logout)\b/i.test(intendedPath)
+      const loginRedirect = pathChanged && hasLoginKeyword
+      console.log(`[RecordingEngine] Final URL: ${finalUrl}`)
+      console.log(`[RecordingEngine] loginRedirect: ${loginRedirect}`)
+
+      // Debug: take screenshot to verify what Puppeteer actually rendered
+      await page.screenshot({ path: 'D:/perfsim/server/tmp/debug-screenshot.png', fullPage: false })
+      console.log('[RecordingEngine] Screenshot saved to tmp/debug-screenshot.png')
 
       // Write recording to disk
       const recordingPath = path.join(this.#sessionDir, 'recording.json')
@@ -127,7 +156,7 @@ export class RecordingEngine {
 
       return recording
     } finally {
-      await browser.close()
+      await closeBrowser(browser)
     }
   }
 }

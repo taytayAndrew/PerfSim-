@@ -55,12 +55,32 @@ describe('RuleEngine', () => {
       expect(results[0].ruleId).toBe('good-rule')
     })
 
-    it('includes script from buildScript in each result', async () => {
+    it('only runs rules matching ruleIds when provided', async () => {
+      const rules = [
+        makeRule('rule-a', { severity: 'high', affectsLCP: true, chains: [], summary: 'a', savedMs: 100 }),
+        makeRule('rule-b', { severity: 'info', affectsLCP: false, chains: [], summary: 'b', savedMs: 0 }),
+      ]
+      const engine = new RuleEngine(rules)
+      const results = await engine.run({}, {}, ['rule-a'])
+      expect(results).toHaveLength(1)
+      expect(results[0].ruleId).toBe('rule-a')
+    })
+
+    it('runs all rules when ruleIds is undefined', async () => {
+      const rules = [
+        makeRule('rule-a', { severity: 'high', affectsLCP: true, chains: [], summary: 'a', savedMs: 100 }),
+        makeRule('rule-b', { severity: 'info', affectsLCP: false, chains: [], summary: 'b', savedMs: 0 }),
+      ]
+      const engine = new RuleEngine(rules)
+      const results = await engine.run({}, {}, undefined)
+      expect(results).toHaveLength(2)
+    })
+
+    it('returns empty array when ruleIds matches no registered rules', async () => {
       const rule = makeRule('rule-a', { severity: 'info', affectsLCP: false, chains: [], summary: 'ok', savedMs: 0 })
       const engine = new RuleEngine([rule])
-      const results = await engine.run({}, {})
-      expect(typeof results[0].script).toBe('string')
-      expect(results[0].script).toContain('rule-a')
+      const results = await engine.run({}, {}, ['rule-does-not-exist'])
+      expect(results).toHaveLength(0)
     })
   })
 })

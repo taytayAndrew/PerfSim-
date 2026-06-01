@@ -13,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.PORT || 3000
 const sessionsDir = path.join(__dirname, '..', 'tmp', 'sessions')
 const rulesDir = path.join(__dirname, '..', 'rules')
+const customRulesDir = path.join(__dirname, '..', 'rules', 'custom')
 
 // Wire up engines
 const sessionManager = new SessionManager(sessionsDir)
@@ -23,6 +24,8 @@ const lighthouseRunner = new LighthouseRunner({ runs: 3 })
 
 const registry = new RuleRegistry()
 await registry.loadFromDir(rulesDir)
+// Also load any previously imported custom rules
+await registry.loadFromDir(customRulesDir)
 const ruleEngine = new RuleEngine(registry.getRules())
 
 const simulationEngine = new SimulationEngine()
@@ -33,12 +36,18 @@ const app = createApp({
   lighthouseRunner,
   ruleEngine,
   simulationEngine,
+  ruleRegistry: registry,
+  customRulesDir,
 })
 
-app.listen(PORT, () => {
-  console.log(`PerfSim Server running at http://localhost:${PORT}`)
-  console.log(`Health:    GET  http://localhost:${PORT}/health`)
-  console.log(`Analyze:   POST http://localhost:${PORT}/api/analyze`)
-  console.log(`Simulate:  POST http://localhost:${PORT}/api/simulate`)
-  console.log(`Rules loaded: ${registry.getRules().length}`)
+await new Promise((resolve, reject) => {
+  const server = app.listen(PORT, () => {
+    console.log(`PerfSim Server running at http://localhost:${PORT}`)
+    console.log(`Health:    GET  http://localhost:${PORT}/health`)
+    console.log(`Analyze:   POST http://localhost:${PORT}/api/analyze`)
+    console.log(`Simulate:  POST http://localhost:${PORT}/api/simulate`)
+    console.log(`Rules loaded: ${registry.getRules().length}`)
+    resolve(server)
+  })
+  server.on('error', reject)
 })

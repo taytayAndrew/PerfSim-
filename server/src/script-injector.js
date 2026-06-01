@@ -13,3 +13,17 @@ export function buildInjectionScript(rules) {
   const body = parts.join('\n')
   return `;(function(){\n${body}\n})();`
 }
+
+/**
+ * Combines HTML snippets from all rules into a single string
+ * to inject into the <head> of the HTML response.
+ *
+ * @param {Array<{ html?: string }>} rules
+ * @returns {string} - combined HTML tags
+ */
+export function buildHtmlInjection(rules) {
+  return rules
+    .map(r => r.html)
+    .filter(h => typeof h === 'string' && h.trim().length > 0)
+    .join('\n')
+}

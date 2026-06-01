@@ -17,9 +17,13 @@ export class RuleEngine {
    * @param {object} lighthouseData - median metrics from LighthouseRunner.measure()
    * @returns {Promise<Array>} - array of rule results
    */
-  async run(recordingData, lighthouseData) {
+  async run(recordingData, lighthouseData, ruleIds) {
+    const rulesToRun = Array.isArray(ruleIds)
+      ? this.#rules.filter(r => ruleIds.includes(r.id))
+      : this.#rules
+
     const settled = await Promise.allSettled(
-      this.#rules.map(rule => this.#runOne(rule, recordingData, lighthouseData))
+      rulesToRun.map(rule => this.#runOne(rule, recordingData, lighthouseData))
     )
 
     return settled
@@ -30,17 +34,26 @@ export class RuleEngine {
   async #runOne(rule, recordingData, lighthouseData) {
     try {
       const analysisResult = rule.analyze(recordingData, lighthouseData)
+      console.log(`[RuleEngine] ${rule.id} → findings=${analysisResult.findings?.length ?? 0} severity=${analysisResult.severity} summary=${analysisResult.summary}`)
       const theoretical = rule.calculateTheoretical(analysisResult, lighthouseData)
       const script = rule.buildScript(analysisResult, recordingData)
+      const html = typeof rule.buildHtml === 'function'
+        ? rule.buildHtml(analysisResult, recordingData)
+        : ''
+      const cards = typeof rule.buildCard === 'function'
+        ? (analysisResult.findings ?? []).map((finding, i) => rule.buildCard(finding, i))
+        : []
       return {
         ruleId: rule.id,
         ruleName: rule.name,
         severity: analysisResult.severity,
         affectsLCP: analysisResult.affectsLCP,
-        chains: analysisResult.chains,
+        findings: analysisResult.findings,
         summary: analysisResult.summary,
         savedMs: theoretical.savedMs,
         script,
+        html,
+        cards,
       }
     } catch (err) {
       console.warn(`[RuleEngine] Rule ${rule.id} failed:`, err.message)

@@ -19,13 +19,19 @@ describe('GET /api/simulate/progress (SSE)', () => {
     const port = server.address().port
 
     await new Promise((resolve, reject) => {
-      const req = http.get(`http://localhost:${port}/api/simulate/progress`, (res) => {
+      const req = http.get(`http://localhost:${port}/api/simulate/progress?id=test-id`, (res) => {
         expect(res.headers['content-type']).toMatch('text/event-stream')
         req.destroy()
         server.close(resolve)
       })
       req.on('error', reject)
     })
+  })
+
+  it('returns 400 when id param is missing', async () => {
+    const app = createApp()
+    const res = await request(app).get('/api/simulate/progress')
+    expect(res.status).toBe(400)
   })
 })
 

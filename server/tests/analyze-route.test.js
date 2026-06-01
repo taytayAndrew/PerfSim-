@@ -7,7 +7,7 @@ import os from 'os'
 
 const TEST_TMP = path.join(os.tmpdir(), 'perfsim-test-analyze-' + Date.now())
 
-function makeMockEngines() {
+function makeMockEngines(ruleRunSpy) {
   return {
     recordingEngine: {
       record: async () => ({
@@ -24,9 +24,9 @@ function makeMockEngines() {
       measure: async () => ({ lcp: 2500, fcp: 1000, tbt: 100, tti: 3000 }),
     },
     ruleEngine: {
-      run: async () => ([
+      run: ruleRunSpy ?? (async () => ([
         { ruleId: 'serial-chain', severity: 'high', affectsLCP: true, chains: [], summary: 'Found 1 chain', savedMs: 300, script: '(function(){})()' },
-      ]),
+      ])),
     },
   }
 }
@@ -69,5 +69,27 @@ describe('POST /api/analyze', () => {
   it('includes loginRedirect flag in response', async () => {
     const res = await request(app).post('/api/analyze').send({ url: 'https://example.com' })
     expect(typeof res.body.loginRedirect).toBe('boolean')
+  })
+
+  it('passes ruleIds to ruleEngine.run() when provided', async () => {
+    let capturedRuleIds
+    const spy = async (_recordingData, _metrics, ruleIds) => {
+      capturedRuleIds = ruleIds
+      return []
+    }
+    const appWithSpy = createApp({ sessionManager: new SessionManager(TEST_TMP), ...makeMockEngines(spy) })
+    await request(appWithSpy).post('/api/analyze').send({ url: 'https://example.com', ruleIds: ['rule-serial-chain'] })
+    expect(capturedRuleIds).toEqual(['rule-serial-chain'])
+  })
+
+  it('passes undefined ruleIds to ruleEngine.run() when not provided (runs all)', async () => {
+    let capturedRuleIds = 'NOT_SET'
+    const spy = async (_recordingData, _metrics, ruleIds) => {
+      capturedRuleIds = ruleIds
+      return []
+    }
+    const appWithSpy = createApp({ sessionManager: new SessionManager(TEST_TMP), ...makeMockEngines(spy) })
+    await request(appWithSpy).post('/api/analyze').send({ url: 'https://example.com' })
+    expect(capturedRuleIds).toBeUndefined()
   })
 })

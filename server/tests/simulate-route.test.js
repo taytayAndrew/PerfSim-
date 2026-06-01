@@ -22,7 +22,7 @@ function makeMockEngines() {
     },
     ruleEngine: {
       run: async () => ([
-        { ruleId: 'serial-chain', severity: 'high', affectsLCP: true, chains: [], summary: 'ok', savedMs: 300, script: 'console.log("optimized")' },
+        { ruleId: 'serial-chain', severity: 'high', affectsLCP: true, chains: [{ requests: [{url:'https://example.com/api', startTime:0, endTime:100},{url:'https://example.com/api2', startTime:110, endTime:200}] }], summary: 'ok', savedMs: 300, script: 'console.log("optimized")' },
       ]),
     },
     simulationEngine: {
@@ -69,5 +69,19 @@ describe('POST /api/simulate', () => {
     const res = await request(app).post('/api/simulate').send({ url: 'https://example.com' })
     expect(Array.isArray(res.body.rules)).toBe(true)
     expect(res.body.rules[0].ruleId).toBe('serial-chain')
+  })
+
+  it('passes ruleIds to ruleEngine.run() when provided', async () => {
+    let capturedRuleIds = 'NOT_SET'
+    const engines = makeMockEngines()
+    engines.ruleEngine = {
+      run: async (_data, _metrics, ruleIds) => {
+        capturedRuleIds = ruleIds
+        return [{ ruleId: 'serial-chain', severity: 'high', affectsLCP: true, chains: [{ requests: [{url:'https://example.com/api',startTime:0,endTime:100},{url:'https://example.com/api2',startTime:110,endTime:200}] }], summary: 'ok', savedMs: 300, script: '' }]
+      }
+    }
+    const localApp = createApp({ sessionManager: new SessionManager(TEST_TMP), ...engines })
+    await request(localApp).post('/api/simulate').send({ url: 'https://example.com', ruleIds: ['rule-serial-chain'] })
+    expect(capturedRuleIds).toEqual(['rule-serial-chain'])
   })
 })

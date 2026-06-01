@@ -4,6 +4,18 @@
 
 ## Agent skills
 
+### Rule writer
+
+Use the `rule-writer` skill (`.claude/skills/rule-writer/`) when adding a new optimization rule.
+It guides through a Q&A to clarify the optimization intent, then generates a compliant rule file in `server/rules/`.
+
+Rule contract: every rule must export `id, name, description, confidence, analyze(), calculateTheoretical(), buildScript(), buildHtml()`.
+See `.claude/skills/rule-writer/REFERENCE.md` for inject-script templates and request object field docs.
+
+Currently registered rules:
+- `rule-serial-chain` — 串行请求链并行化
+- `rule-dedup-requests` — 重复请求去重
+
 ### Issue tracker
 
 Issues live in GitHub Issues (`taytayAndrew/PerfSim-`). See `docs/agents/issue-tracker.md`.
