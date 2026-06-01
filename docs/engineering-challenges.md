@@ -267,16 +267,198 @@ export function buildCard(finding, index) {
 
 ---
 
+---
+
+## 难点八：Express 5 + ESM top-level await 导致进程启动后立即退出
+
+### 现象
+
+`node src/index.js` 打印启动日志后进程立即退出，Server 无法保持运行，没有任何报错。
+
+### 根因
+
+Express 5 将 `app.listen()` 改为返回 `Promise`（Express 4 返回的是 `http.Server`）。`index.js` 是 ESM 模块，支持 top-level `await`。
+
+Node.js 的行为：当 ESM 模块顶层代码执行完毕且事件循环无 pending 任务时，进程退出。`app.listen()` 在 Express 5 里变成了 Promise，**不 `await` 它就等于调用后立即丢弃**——事件循环没有任何挂起的异步操作，进程认为任务已完成，自动退出。
+
+### 解法
+
+用 `Promise` 包裹 `http.Server.listen()`，`await` 它使进程持续挂起：
+
+```js
+// 修复前
+app.listen(PORT, () => { console.log('Server started') })
+
+// 修复后
+await new Promise((resolve, reject) => {
+  const server = app.listen(PORT, () => resolve(server))
+  server.on('error', reject)
+})
+```
+
+### 闪光点
+
+这个 bug 的迷惑性在于：进程"正常"退出，没有 uncaught exception，日志看起来也正常。需要理解 Node.js 事件循环的退出条件（无 pending I/O / timer / Promise），以及 Express 5 的 breaking change，才能快速定位。不熟悉这两个知识点的人会花大量时间怀疑端口冲突、环境变量、ESM 配置等无关方向。
+
+---
+
+## 难点九：CDP Cookie 注入的三层 API——同一功能三种实现，只有一种真正有效
+
+### 背景
+
+PerfSim 需要在 Puppeteer 中注入 Cookie 让 SSO 页面正常加载。Cookie 注入有三种 API 路径，名字相近但作用域完全不同。
+
+### 三种 API 的实质差异
+
+| API | 写入位置 | 对 Lighthouse 内部 tab 生效？ |
+|-----|----------|-------------------------------|
+| page-level CDP `Network.setCookie` | Chrome 内部虚拟 NetworkContext（per-page） | ❌ 不生效 |
+| `page.setCookie()` | 浏览器真实 Cookie jar（browser-level） | ✅ 生效 |
+| browser-level CDP `Network.setCookie` | 浏览器真实 Cookie jar | ✅ 生效 |
+
+`page.setCookie()` 内部走的是 Browser-level CDP session，写入浏览器真实 Cookie jar，所有 tab 共享。而 page-level CDP session 的 `Network.setCookie` 写入的是 Chrome 内部的虚拟 NetworkContext，浏览器发请求时完全不读这个 store。
+
+这个 bug 在三个模块（RecordingEngine、LighthouseRunner、SimulationEngine）里各自独立踩了一次，因为每个模块的作者（开发阶段）都做了同一个错误假设："我能读到 Cookie（`Network.getAllCookies` 有结果），说明注入成功了"。
+
+### 解法
+
+所有模块统一：先 `goto(origin)` 建立真实的浏览器上下文，再用 `page.setCookie()` 写入。
+
+```js
+const tempPage = await browser.newPage()
+await tempPage.goto(origin, { waitUntil: 'domcontentloaded' }).catch(() => {})
+await tempPage.setCookie(...puppeteerCookies)
+await tempPage.close()
+```
+
+### 闪光点
+
+这个问题的核心陷阱在于：`Network.getAllCookies` 从同一个虚拟 NetworkContext 读，所以"写进去"和"读出来"都成功，但浏览器发请求时走的是真实 Cookie jar，两者互不相通。**"能读到"和"请求携带"是两个完全不同的数据路径**——能识别出这个区分，需要对 Chrome 网络栈和 CDP 协议的内部分层有具体认知。
+
+---
+
+## 难点十：动态接口检测粒度错误——URL 级别 vs cacheKey 三元组级别
+
+### 现象
+
+规则识别出 28 条串行链，但 `buildScript` 只生成了 5 条 ENTRIES，绝大多数请求没有被缓存，注入脚本几乎是空操作，优化效果为零。
+
+### 根因
+
+`buildScript` 用 `METHOD:URL` 为粒度判断"是否为动态接口"：只要同一 URL 出现过多个不同 requestBody，整个 URL 就被排除。
+
+真实场景：`POST /getSubTree` 被调 13 次，每次传不同的 `dimension` 参数（`ACCOUNT`、`DAY`、`MONTH`...），每个参数对应的响应是固定的。这 13 个请求实际上是 13 个**确定性的三元组**，每个都可以安全缓存。但 URL 粒度的检测把它们全部一刀切排除了。
+
+### 解法
+
+改为以 `cacheKey`（`METHOD:URL:md5(body)`）为粒度建索引：
+
+```js
+// 修复前：URL 粒度——同 URL 出现多个 body 就全排除
+const bodyIndex = {}  // "METHOD:url" → Set of requestBodies
+if (bodies.size > 1) skip
+
+// 修复后：cacheKey 粒度——只有同一输入返回不同输出才排除
+const cacheKeyIndex = {}  // cacheKey → Set of responseBodies
+if (responsesForKey.size > 1) skip  // 服务端对相同输入返回了不同输出 = 真正动态
+```
+
+### 闪光点
+
+问题的本质是**可缓存性的判断维度**：不是"这个 URL 是否动态"，而是"这个具体的（URL+method+body）三元组，响应是否确定"。前者是粗糙的 URL 视角，后者才是正确的接口语义视角。将判断粒度从 URL 精化到 cacheKey，ENTRIES 数量从 5 条增加到 28 条，优化效果质变。
+
+---
+
+## 难点十一：URLSearchParams body 序列化不一致，XHR 拦截全部 MISS
+
+### 现象
+
+注入脚本 `ENTRIES` 里有 `POST /getConfig`（requestBody = `action=getCompany`），但 simulate 阶段 XHR 拦截全部 MISS，没有任何 HIT 日志，LCP 无改善。
+
+### 根因
+
+页面代码用 `new URLSearchParams({ action: 'getCompany' })` 作为 body 发请求。注入脚本 XHR 拦截里的 body 处理：
+
+```js
+var b = typeof body === 'string' ? body : ''
+```
+
+`URLSearchParams` 的 `typeof` 是 `object`，不是 `string`，直接变成空字符串 `''`。而 ENTRIES 里存的是 `action=getCompany`。两者永远不匹配，所有用 URLSearchParams 发送的请求全部 MISS。
+
+fetch 拦截有类似问题：用 `JSON.stringify` 处理 URLSearchParams，把它序列化成 `"{}"`（URLSearchParams 没有可枚举属性）。
+
+CDP 录制时，浏览器在发出 XHR/fetch 请求前会先将 URLSearchParams 序列化为 `key=value&...` 格式的字符串，**拦截脚本必须做同样的序列化**才能与 ENTRIES 里的 requestBody 匹配。
+
+### 解法
+
+新增 `serializeBody()` 函数，精确模拟 CDP 录制时浏览器的序列化行为：
+
+```js
+function serializeBody(body) {
+  if (!body) return '';
+  if (typeof body === 'string') return body;
+  if (body instanceof URLSearchParams) return body.toString(); // "key=value&..."
+  if (body instanceof FormData) {
+    var parts = [];
+    body.forEach(function(v, k) { parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(v)); });
+    return parts.join('&');
+  }
+  try { return JSON.stringify(body); } catch(e) { return String(body); }
+}
+```
+
+### 闪光点
+
+问题的核心在于：**录制时浏览器做了序列化，注入脚本必须做完全相同的序列化**，两者才能在 string 层面对齐。不理解"CDP 录制 postData 时浏览器已经序列化过一次"这个细节，根本不会想到序列化不一致是问题所在。
+
+---
+
+## 难点十二：loginRedirect 误判——应用 URL 本身含 login 关键词
+
+### 现象
+
+目标页面 URL 为 `/hdb/login/home#/designModelSheet2/...`，每次录制都被判定为 `loginRedirect: true`，Server 直接返回 401，用户无法使用。但页面实际加载完全正常。
+
+### 根因
+
+loginRedirect 检测基于字符串关键词：`finalUrl.includes('login')`。目标应用的路由设计中，`/login/` 是业务模块路径的一部分（类似 `/login/home` 表示"登录后的首页"），不代表"被重定向到登录页"。
+
+单纯的关键词匹配无法区分两种场景：
+1. 正常访问：`/app/login/home`（业务路由，含 login）
+2. 被重定向：`/auth/login?redirect=...`（真正的登录页）
+
+### 解法
+
+改为对比**意图路径 vs 最终路径**的差异，且仅当目标路径本身**不含** login 关键词、但最终路径**含有**时才判定为跳转：
+
+```js
+const pathChanged = !finalPath.startsWith(intendedPath.split('/').slice(0, 3).join('/'))
+const hasLoginKeyword = /\/(login|signin|auth)\b/i.test(finalPath)
+  && !/\/(login|signin|auth)\b/i.test(intendedPath)
+const loginRedirect = pathChanged && hasLoginKeyword
+```
+
+### 闪光点
+
+这是一个"用户视角 vs 业务路由实际结构"的错配问题。技术上关键词匹配看起来合理，但真实的企业内部系统路由命名完全不遵循"约定俗成"——`/login/home` 对用户来说是"登录后的工作台"，对检测逻辑来说却是"登录页"。识别出这类"通用假设在真实业务场景下失效"的情况，并设计出基于路径变化 + 路径对比的更鲁棒判断，是这次修复的亮点。
+
+---
+
 ## 总结
 
 | 难点 | 核心能力 |
 |------|----------|
-| Cookie 注入导致测同一个页面 | 对 Puppeteer/CDP API 层级差异的理解 |
-| NaN 隐式传播断链 | 数据防御性编程，不信任上游字段 |
-| 注入脚本静默 SyntaxError | 主动设计可观察性（心跳日志） |
+| Express 5 进程立即退出 | Node.js 事件循环退出条件 + 框架 breaking change 意识 |
+| CDP Cookie 注入三层 API 区分 | Chrome 网络栈内部分层，CDP 协议层级差异 |
+| LighthouseRunner 测登录页（指标全涨） | 质疑测量环境对称性，而非只怀疑优化逻辑 |
+| NaN 隐式传播断链 | 防御性数据编程，不信任上游字段 |
+| 注入脚本静默 SyntaxError | 主动设计可观察性（心跳日志填补盲区） |
 | Lantern 吃掉优化效果 | 读 Lighthouse 源码，理解模拟 vs 实测的本质差异 |
-| SEED 旧数据破坏新 Session | 识别数据的时态语义（快照 vs 动态） |
-| 并行/串行重复的正确区分 | 从性能影响反推判断逻辑，而不是从代码层面想当然 |
+| SEED 旧数据破坏新 Session | 识别响应体的时态语义（快照数据在新 Session 里失效） |
+| 并行/串行重复的正确区分 | 从性能影响反推判断逻辑，CDP 时间戳误差建模 |
+| 动态接口检测粒度错误 | 可缓存性判断：URL 视角 vs cacheKey 三元组视角 |
+| URLSearchParams 序列化不一致 | CDP 录制行为与注入脚本必须保持序列化对称 |
+| loginRedirect 误判 | 通用假设在真实业务路由下失效，路径对比替代关键词匹配 |
 | 可插拔规则架构 | 内聚 vs 耦合的架构判断，面向扩展设计 |
 
 每一个问题的共同点：**表面现象和根因之间隔着至少一层非直觉的间接性**。能在信息不完整的情况下建立假设、设计验证手段、找到真正的根因，是这个项目最核心的工程能力体现。
